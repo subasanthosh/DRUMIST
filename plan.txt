@@ -1,7 +1,7 @@
 
 ROADMAP:
 
-vedio -> analyses the vedio -> retrive the beats and BPM -> arranges it in FL midi editor
+vedio,audio -> analyses the vedio -> retrive the beats and BPM -> arranges it in FL midi editor
 
 pyAutoGUI - tool of an agent.
 
