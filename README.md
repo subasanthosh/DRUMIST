@@ -1,60 +1,42 @@
 # Drumist
 
-A 6-week learning project focused on audio processing, drum separation, and classification.
+Drumist is an in-progress project for turning a drum-beat audio file into an
+editable, playable drum-machine pattern. The goal is to identify drum hits in
+recorded audio, place them on a sequencer grid, and let you hear and edit the
+result.
 
-## Learning Plan
+## How it works
 
-### Week 1: Audio Basics
-- Learn about waveforms, STFT, and spectrograms
-- Experiment with Librosa library
-- Load audio files and plot waveforms
+The project has two parts:
 
-### Week 2: Drum Separation
-- Use Demucs for drum separation
-- Separate drums from songs
-- Save output as WAV files
-- Listen to and evaluate results
+- **Sequencer UI (`frontend/`)** — a browser-based step sequencer for kick,
+  snare, tom, and overhead parts. Set the tempo, time signature, and pattern
+  length; edit hits on a grid with eight subdivisions per beat; and play the
+  pattern using synthesized drum sounds. The UI can also import and export
+  timestamped drum events as JSON.
+- **Audio-analysis prototype (`backend/`)** — Python code that estimates a
+  recording's tempo, divides it into short time slices, extracts MFCC audio
+  features, and uses a saved classifier to label slices as drum types or
+  silence.
 
-### Week 3: Hit Detection
-- Implement onset detection using Librosa
-- Mark timestamps of drum hits
-- Plot detection results on waveforms
+## Current status
 
-### Week 4: Drum Classification
-- Extract MFCC features from audio
-- Label a small dataset of drum samples
-- Train a classifier for drum types
-- Predict drum types from new audio
+The sequencer and audio-analysis prototype are not yet connected into a complete
+audio-to-pattern workflow. The frontend does not currently upload or analyze an
+audio file; it can load timestamped event data as JSON. The FastAPI endpoint is
+also a placeholder, so the audio classifier is not currently exposed to the UI
+through the API.
 
-### Week 5: Backend API
-- Build a FastAPI backend
-- Create upload endpoint for audio files
-- Process audio to extract timestamps and labels
-- Return processed results
+## Run the sequencer UI
 
-### Week 6: Frontend
-- Create a web interface for file upload
-- Display waveforms and beat timelines
-- Play isolated drum tracks
-
-## Setup
-
-This project uses Python. Install dependencies with:
+From the `frontend/` directory, install the JavaScript dependencies and start
+the development server:
 
 ```bash
-pip install -r requirements.txt
+npm install
+npm run dev
 ```
 
-Or if using uv:
-
-```bash
-uv pip install -r requirements.txt
-```
-
-## Usage
-
-Run the main application:
-
-```bash
-python main.py
-```
+Open the local URL printed by Vite. You can create a pattern in the sequencer,
+play it, copy its timestamped JSON, or paste compatible timestamped drum events
+into the import panel.
