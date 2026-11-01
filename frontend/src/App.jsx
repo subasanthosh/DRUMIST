@@ -9,6 +9,7 @@ const instruments = [
 ]
 
 const subdivisions = ['1', 'ta', 'e', 'ta', '&', 'ta', 'a', 'ta']
+const barOptions = [1, 2, 4, 8, 16, 32, 64]
 
 function createPattern(stepCount) {
   const pattern = Object.fromEntries(
@@ -23,6 +24,48 @@ function createPattern(stepCount) {
   }
 
   return pattern
+}
+
+function patternFromEvents(events, stepCount, stepDuration) {
+  if (!events || Array.isArray(events) || typeof events !== 'object') {
+    return { error: 'The event data must be an object keyed by timestamps.' }
+  }
+
+  const pattern = Object.fromEntries(
+    instruments.map(({ id }) => [id, Array(stepCount).fill(false)]),
+  )
+  const idByName = new Map([
+    ['kick', 'kick'],
+    ['snare', 'snare'],
+    ['tom', 'tom'],
+    ['overhead', 'overhead'],
+    ['overheads', 'overhead'],
+  ])
+
+  for (const [timestamp, value] of Object.entries(events)) {
+    const time = Number(timestamp)
+    if (!Number.isFinite(time) || time < 0) {
+      return { error: `Invalid timestamp: "${timestamp}".` }
+    }
+    const step = Math.round(time / stepDuration)
+    if (step >= stepCount) {
+      return { error: `Timestamp ${timestamp}s is outside the current grid.` }
+    }
+
+    for (const name of Array.isArray(value) ? value : [value]) {
+      if (typeof name !== 'string') {
+        return { error: `Expected a drum name or "Silent" at ${timestamp}s.` }
+      }
+      if (name.toLowerCase() === 'silent') continue
+      const instrumentId = idByName.get(name.toLowerCase())
+      if (!instrumentId) {
+        return { error: `Unknown drum "${name}" at ${timestamp}s.` }
+      }
+      pattern[instrumentId][step] = true
+    }
+  }
+
+  return { pattern }
 }
 
 function createAudioKit(context, masterGain) {
@@ -118,6 +161,10 @@ function App() {
   const [importError, setImportError] = useState('')
   const [audioError, setAudioError] = useState('')
   const [copied, setCopied] = useState(false)
+  const [audioFile, setAudioFile] = useState(null)
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [analysisMessage, setAnalysisMessage] = useState('')
+  const [analysisError, setAnalysisError] = useState('')
 
   const stepCount = numerator * bars * subdivisions.length
   const beatDuration = (60 / bpm) * (4 / denominator)
@@ -264,46 +311,53 @@ function App() {
       return
     }
 
-    const nextPattern = Object.fromEntries(
-      instruments.map(({ id }) => [id, Array(stepCount).fill(false)]),
-    )
-    const idByName = new Map([
-      ['kick', 'kick'],
-      ['snare', 'snare'],
-      ['tom', 'tom'],
-      ['overhead', 'overhead'],
-      ['overheads', 'overhead'],
-    ])
-
-    for (const [timestamp, value] of Object.entries(parsed)) {
-      const time = Number(timestamp)
-      if (!Number.isFinite(time) || time < 0) {
-        setImportError(`Invalid timestamp: "${timestamp}".`)
-        return
-      }
-      const step = Math.round(time / stepDuration)
-      if (step >= stepCount) {
-        setImportError(`Timestamp ${timestamp}s is outside the current grid.`)
-        return
-      }
-
-      const names = Array.isArray(value) ? value : [value]
-      for (const name of names) {
-        if (typeof name !== 'string') {
-          setImportError(`Expected a drum name or "Silent" at ${timestamp}s.`)
-          return
-        }
-        if (name.toLowerCase() === 'silent') continue
-        const instrumentId = idByName.get(name.toLowerCase())
-        if (!instrumentId) {
-          setImportError(`Unknown drum "${name}" at ${timestamp}s.`)
-          return
-        }
-        nextPattern[instrumentId][step] = true
-      }
+    const result = patternFromEvents(parsed, stepCount, stepDuration)
+    if (result.error) {
+      setImportError(result.error)
+      return
     }
 
-    setPattern(nextPattern)
+    setPattern(result.pattern)
+  }
+
+  async function analyzeAudio(event) {
+    event.preventDefault()
+    if (!audioFile || isAnalyzing) return
+
+    setAnalysisError('')
+    setAnalysisMessage('')
+    setIsAnalyzing(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', audioFile)
+      const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+      const response = await fetch(`${apiBaseUrl}/api/process_audio`, {
+        method: 'POST',
+        body: formData,
+      })
+      const result = await response.json()
+      if (!response.ok) {
+        throw new Error(result.detail || 'Audio analysis failed. Please try another file.')
+      }
+
+      const nextBpm = Number(result.bpm)
+      const barDuration = (60 / nextBpm) * (4 / denominator) * numerator
+      const requiredBars = Math.max(1, Math.ceil(result.duration / barDuration))
+      const nextBars = barOptions.find((value) => value >= requiredBars) ?? 64
+      const nextStepCount = numerator * nextBars * subdivisions.length
+      const nextStepDuration = (60 / nextBpm) * (4 / denominator) / subdivisions.length
+      const mapped = patternFromEvents(result.events, nextStepCount, nextStepDuration)
+      if (mapped.error) throw new Error(mapped.error)
+
+      setBpm(nextBpm)
+      setBars(nextBars)
+      setPattern(mapped.pattern)
+      setAnalysisMessage(`Pattern detected at ${nextBpm} BPM · ${result.duration.toFixed(1)} seconds`)
+    } catch (error) {
+      setAnalysisError(error instanceof Error ? error.message : 'Audio analysis failed.')
+    } finally {
+      setIsAnalyzing(false)
+    }
   }
 
   async function copyPatternData() {
@@ -404,7 +458,7 @@ function App() {
           <label className="bars-control">
             <span className="control-label">LENGTH</span>
             <select aria-label="Pattern length in bars" value={bars} onChange={(event) => setBars(Number(event.target.value))}>
-              {[1, 2, 4].map((value) => <option key={value} value={value}>{value} {value === 1 ? 'bar' : 'bars'}</option>)}
+              {barOptions.map((value) => <option key={value} value={value}>{value} {value === 1 ? 'bar' : 'bars'}</option>)}
             </select>
           </label>
           <label className="volume-control" title={`Volume ${volume}%`}>
@@ -421,6 +475,43 @@ function App() {
               />
             </span>
           </label>
+        </section>
+
+        <section className="analysis-panel card" aria-labelledby="analysis-heading">
+          <div className="analysis-copy">
+            <div className="eyebrow"><span className="eyebrow-line" /> AUDIO TO PATTERN</div>
+            <h2 id="analysis-heading">Start with a recording.</h2>
+            <p className="section-caption">Upload a drum recording to detect its tempo and place hits on the grid.</p>
+          </div>
+          <form className="analysis-form" onSubmit={analyzeAudio}>
+            <label className="audio-file-picker">
+              <span>{audioFile ? audioFile.name : 'Choose an audio file'}</span>
+              <input
+                accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a"
+                aria-label="Choose an audio recording"
+                type="file"
+                onChange={(event) => {
+                  const selectedFile = event.target.files?.[0] ?? null
+                  setAnalysisError('')
+                  setAnalysisMessage('')
+                  if (selectedFile && selectedFile.size > 25 * 1024 * 1024) {
+                    setAudioFile(null)
+                    setAnalysisError('Audio files must be 25 MB or smaller.')
+                    return
+                  }
+                  setAudioFile(selectedFile)
+                }}
+              />
+            </label>
+            <button className="analyze-button" disabled={!audioFile || isAnalyzing} type="submit">
+              {isAnalyzing ? 'Analyzing…' : 'Analyze recording'}
+            </button>
+          </form>
+          {(analysisMessage || analysisError) && (
+            <p className={`analysis-status${analysisError ? ' error' : ''}`} role={analysisError ? 'alert' : 'status'}>
+              {analysisError || analysisMessage}
+            </p>
+          )}
         </section>
 
         {audioError && <p className="notice error-notice" role="alert">{audioError}</p>}

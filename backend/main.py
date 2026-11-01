@@ -1,30 +1,67 @@
-from fastapi import FastAPI
-from process import process_audio  # Import the process_audio function from process.py
+import logging
+import tempfile
+from pathlib import Path
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from backend.process import MODEL_PATH, process_audio
 
 
-app = FastAPI()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to the Drumist API!"}
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
+FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 
-
-@app.post("/process_audio/")
-def process_audio(file_path: str):
-    # Call the process_audio function from process.py
-
-    return {"message": "Audio processed successfully"}
+app = FastAPI(title="Drumist API", version="1.0.0")
 
 
-"""
-how to import a python file which is in another folder?
-To import a Python file that is located in another folder, you can use the following methods:
-1. Modify the sys.path:
-You can add the folder containing the Python file to the sys.path list, which allows Python to
-    search for modules in that folder. Here's an example:
-```python
-import sys
-sys.path.append('/path/to/your/folder')  # Replace with the actual path to
+@app.get("/api/health")
+def health_check():
+    return {"status": "ok", "model_available": MODEL_PATH.is_file()}
 
-    the folder containing the Python file
-"""
+
+@app.post("/api/process_audio")
+def analyze_audio(file: UploadFile = File(...)):
+    extension = Path(file.filename or "").suffix.lower()
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail="Upload a WAV, MP3, FLAC, OGG, or M4A audio file.",
+        )
+
+    content = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if not content:
+        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Audio files must be 25 MB or smaller.")
+
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=extension, delete=False) as temporary_file:
+            temporary_file.write(content)
+            temporary_path = Path(temporary_file.name)
+        return process_audio(temporary_path)
+    except FileNotFoundError as error:
+        logger.error("Audio analysis model is unavailable: %s", error)
+        raise HTTPException(status_code=503, detail="The drum classifier is not installed.") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except Exception as error:
+        logger.exception("Audio analysis failed")
+        raise HTTPException(status_code=422, detail="The audio file could not be analyzed.") from error
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        file.file.close()
+
+
+if FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+else:
+    @app.get("/")
+    def read_root():
+        return {"message": "Drumist API is running. Build the frontend to serve the application."}

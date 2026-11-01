@@ -1,135 +1,60 @@
+import os
+from functools import lru_cache
+from pathlib import Path
+
+import joblib
 import librosa
 import numpy as np
-import joblib
-
-def find_bpm(file_path):
-    # Load the audio file
-    y, sr = librosa.load(file_path)
-
-    # Estimate the tempo (BPM)
-    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
-
-    return round(tempo[0])
 
 
-
-def grid_stamps(bpm,time_sign,duration):
-    grid_duration = (60 / bpm) / 8
-
-    timestamps = []
-
-    t = 0
-
-    while t <= duration:
-        timestamps.append(round(t, 4))
-        t += grid_duration
-
-    return timestamps
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MODEL_PATH = Path(os.environ.get("DRUMIST_MODEL_PATH", PROJECT_ROOT / "drumist_model.pkl"))
+DRUM_LABELS = {0: "Kick", 1: "Snare", 2: "overhead", 3: "tom"}
+MAX_AUDIO_SECONDS = 40
 
 
-def is_silent(chunk, threshold=0.01):
-    rms = librosa.feature.rms(y=chunk)[0]
-    energy = np.mean(rms)
-
-    return energy < threshold
-
-
-
-def extract_mfcc(audio, sr):
-    audio_mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
-    # for n,i in enumerate(audio_mfcc):
-    #     print("MFCC Mean:", i,n)
-        
-    mfcc_mean = audio_mfcc.T.mean(axis=0)
-    # why Transpose? Because librosa returns MFCCs in shape (n_mfcc, n_frames), and we want to average across frames (axis=0) to get a single feature vector for the audio chunk.
-    # but we can also use np.mean(audio_mfcc, axis=1) to get the same result without transposing.right?
-    # Yes, you are correct. You can use np.mean(audio_mfcc, axis=1) to get the same result without transposing. The choice between transposing and using axis=1 is a matter of preference and readability. Both approaches will yield the same mean MFCC values across frames.
-    return mfcc_mean
+@lru_cache(maxsize=1)
+def load_model():
+    if not MODEL_PATH.is_file():
+        raise FileNotFoundError(f"Drum classifier not found: {MODEL_PATH}")
+    return joblib.load(MODEL_PATH)
 
 
-#MAIN
-#==================================================================
-
-def process_audio(file_path):
-
-  audio_path = file_path
-  audio,sr = librosa.load(audio_path)  # Load the audio file with a specific sampling rate
-  grid = {}
-
-  bpm = find_bpm(audio_path)
+def extract_mfcc(audio: np.ndarray, sample_rate: int) -> np.ndarray:
+    features = librosa.feature.mfcc(y=audio, sr=sample_rate, n_mfcc=13)
+    return features.mean(axis=1)
 
 
-  duration = round(librosa.get_duration(path=audio_path),4)
+def process_audio(file_path: str | Path) -> dict:
+    duration = float(librosa.get_duration(path=file_path))
+    if duration > MAX_AUDIO_SECONDS:
+        raise ValueError(f"Audio must be {MAX_AUDIO_SECONDS} seconds or shorter.")
 
-  print("BPM:", bpm)
-  print("Duration:", duration)
+    audio, sample_rate = librosa.load(file_path, sr=22050, mono=True)
+    if audio.size == 0:
+        raise ValueError("The uploaded audio file is empty or unreadable.")
 
-  #THE MODEL
-  drumist_model = joblib.load(r"D:\drumist\drumist_model.pkl")
+    tempo, _ = librosa.beat.beat_track(y=audio, sr=sample_rate)
+    bpm = max(1, round(float(np.asarray(tempo).reshape(-1)[0])))
+    step_duration = 60 / bpm / 8
+    step_count = max(1, int(np.ceil(duration / step_duration)))
+    model = load_model()
+    events = {}
 
+    for step in range(step_count):
+        start = step * step_duration
+        end = min(start + step_duration, duration)
+        chunk = audio[int(start * sample_rate):int(end * sample_rate)]
+        timestamp = f"{start:.4f}"
 
-  grid_time = grid_stamps(bpm, 4, duration)
+        if chunk.size == 0 or float(np.sqrt(np.mean(chunk**2))) < 0.01:
+            events[timestamp] = "Silent"
+            continue
 
-  for i in range(len(grid_time)):
-      start = grid_time[i]
-      end = grid_time[i + 1] if i + 1 < len(grid_time) else duration
+        prediction = model.predict([extract_mfcc(chunk, sample_rate)])[0]
+        label = DRUM_LABELS.get(prediction, DRUM_LABELS.get(str(prediction)))
+        if label is None:
+            raise ValueError(f"The classifier returned an unsupported drum label: {prediction}")
+        events[timestamp] = label
 
-      start_sample = int(start * sr)
-      end_sample = int(end * sr)
-
-      chunk = audio[start_sample:end_sample-10]  # Subtract 10 samples to avoid overlap
-
-      mfcc_features = extract_mfcc(chunk, sr)
-      if is_silent(chunk):
-          grid[start] = "Silent"
-      elif drumist_model.predict([mfcc_features])[0] == 0:
-          grid[start] = "Kick"
-      elif drumist_model.predict([mfcc_features])[0] == 1:
-          grid[start] = "Snare"
-      elif drumist_model.predict([mfcc_features])[0] == 2:
-          grid[start] = "overhead"
-      elif drumist_model.predict([mfcc_features])[0] == 3:
-          grid[start] = "tom"
-l
-  for timestamp, drum in grid.items():
-      print(f"Timestamp: {timestamp:.4f} sec - Drum: {drum}")
-
-
-
-
-
-#  mel_basis = filters.mel(sr=sr, n_fft=n_fft, **kwargs)
-# D:\drumist\.venv\Lib\site-packages\librosa\feature\spectral.py:2148: UserWarning: Empty filters detected in mel frequency basis. Some channels will produce empty responses. Try increasing your sampling rate (and fmax) or reducing n_mels.
-#   mel_basis = filters.mel(sr=sr, n_fft=n_fft, **kwargs)
-# D:\drumist\.venv\Lib\site-packages\librosa\feature\spectral.py:2148: UserWarning: Empty filters detected in mel frequency basis. Some channels will produce empty responses. Try increasing your sampling rate (and fmax) or reducing n_mels.
-#   mel_basis = filters.mel(sr=sr, n_fft=n_fft, **kwargs)
-# D:\drumist\.venv\Lib\site-packages\librosa\feature\spectral.py:2148: UserWarning: Empty filters detected in mel frequency basis. Some channels will produce empty responses. Try increasing your sampling rate (and fmax) or reducing n_mels.
-#   mel_basis = filters.mel(sr=sr, n_fft=n_fft, **kwargs)
-# D:\drumist\.venv\Lib\site-packages\librosa\feature\spectral.py:2148: UserWarning: Empty filters detected in mel frequency basis. Some channels will produce empty responses. Try increasing your sampling rate (and fmax) or reducing n_mels.
-#   mel_basis = filters.mel(sr=sr, n_fft=n_fft, **kwargs)
-# D:\drumist\.venv\Lib\site-packages\librosa\feature\spectral.py:2148: UserWarning: Empty filters detected in mel frequency basis. Some channels will produce empty responses. Try increasing your sampling rate (and fmax) or reducing n_mels.
-#   mel_basis = filters.mel(sr=sr, n_fft=n_fft, **kwargs)
-# D:\drumist\.venv\Lib\site-packages\librosa\feature\spectral.py:2148: UserWarning: Empty filters detected in mel frequency basis. Some channels will produce empty responses. Try increasing your sampling rate (and fmax) or reducing n_mels.
-#   mel_basis = filters.mel(sr=sr, n_fft=n_fft, **kwargs)
-# D:\drumist\.venv\Lib\site-packages\librosa\feature\spectral.py:2148: UserWarning: Empty filters detected in mel frequency basis. Some channels will produce empty responses. Try increasing your sampling rate (and fmax) or reducing n_mels.
-#   mel_basis = filters.mel(sr=sr, n_fft=n_fft, **kwargs)
-
-# what are this warnings?
-# these warnings indicate that some of the mel frequency filters used in the mel spectrogram calculation are empty, meaning they do not respond to any frequencies in the audio signal. This can happen if the sampling rate is too low, the maximum frequency (fmax) is set too high, or if the number of mel bands (n_mels) is too large for the given audio signal.
-# how to fix this warnings?
-# To fix these warnings, you can try the following approaches:
-# 1. Increase the sampling rate of your audio signal if possible.
-# 2. Reduce the maximum frequency (fmax) parameter when creating the mel filter bank. 
-
-# the corrected module to fix this is as follows:
-# def extract_mfcc(audio, sr):
-#     n_fft = 2048  # You can adjust this value based on your needs
-
-
-
-# how can we find the window is not a hit by using librosa's onset?
-# by 
-
-
-
-process_audio(r"D:\drumist\drumist_test.wav")
+    return {"bpm": bpm, "duration": round(duration, 4), "events": events}
