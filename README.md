@@ -29,6 +29,10 @@ Choose a WAV, MP3, FLAC, OGG, or M4A file up to 25 MB and 40 seconds long, then 
 
 The classifier is loaded from `drumist_model.pkl` in the project root. Set `DRUMIST_MODEL_PATH` to use a model stored elsewhere. The bundled model is a prototype classifier, so detection quality depends on the recording and model training data.
 
+## Deploy to Render
+
+This repository includes a Render Blueprint at `render.yaml`. In Render, choose **New → Blueprint**, connect this repository, and apply the `drumist` web service. Render builds the Dockerfile, which packages the Python API, production frontend, audio decoders, and classifier in one service. The `/api/health` endpoint is configured as the deployment health check.
+
 ## Deploy With Docker
 
 Build and run the combined frontend/API image from the repository root:

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 const instruments = [
@@ -156,7 +156,7 @@ function App() {
   const [volume, setVolume] = useState(65)
   const [playing, setPlaying] = useState(false)
   const [currentStep, setCurrentStep] = useState(-1)
-  const [pattern, setPattern] = useState(() => createPattern(32))
+  const [patternState, setPatternState] = useState(() => createPattern(32))
   const [importValue, setImportValue] = useState('')
   const [importError, setImportError] = useState('')
   const [audioError, setAudioError] = useState('')
@@ -169,36 +169,33 @@ function App() {
   const stepCount = numerator * bars * subdivisions.length
   const beatDuration = (60 / bpm) * (4 / denominator)
   const stepDuration = beatDuration / subdivisions.length
+  const pattern = useMemo(
+    () => Object.fromEntries(
+      instruments.map(({ id }) => [
+        id,
+        Array.from({ length: stepCount }, (_, index) => patternState[id][index] ?? false),
+      ]),
+    ),
+    [patternState, stepCount],
+  )
   const patternRef = useRef(pattern)
   const stepCountRef = useRef(stepCount)
   const stepDurationRef = useRef(stepDuration)
-  const volumeRef = useRef(volume)
   const audioRef = useRef(null)
   const stepIndexRef = useRef(0)
   const nextStepTimeRef = useRef(0)
-  const playbackStartTimeRef = useRef(0)
   const scheduledUiTimersRef = useRef([])
 
-  patternRef.current = pattern
-  stepCountRef.current = stepCount
-  stepDurationRef.current = stepDuration
-  volumeRef.current = volume
-
-  useEffect(() => {
-    setPattern((previous) =>
-      Object.fromEntries(
-        instruments.map(({ id }) => [
-          id,
-          Array.from({ length: stepCount }, (_, index) => previous[id][index] ?? false),
-        ]),
-      ),
-    )
-  }, [stepCount])
+  useLayoutEffect(() => {
+    patternRef.current = pattern
+    stepCountRef.current = stepCount
+    stepDurationRef.current = stepDuration
+  }, [pattern, stepCount, stepDuration])
 
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.masterGain.gain.setTargetAtTime(
-        volumeRef.current / 100,
+        volume / 100,
         audioRef.current.context.currentTime,
         0.015,
       )
@@ -250,12 +247,24 @@ function App() {
   }, [pattern, stepCount, stepDuration])
 
   function toggleStep(instrumentId, step) {
-    setPattern((previous) => ({
+    setPatternState((previous) => ({
       ...previous,
-      [instrumentId]: previous[instrumentId].map((active, index) =>
-        index === step ? !active : active,
-      ),
+      [instrumentId]: Array.from({ length: stepCount }, (_, index) => {
+        const active = previous[instrumentId][index] ?? false
+        return index === step ? !active : active
+      }),
     }))
+  }
+
+  function resizePattern(nextStepCount) {
+    setPatternState((previous) =>
+      Object.fromEntries(
+        instruments.map(({ id }) => [
+          id,
+          Array.from({ length: nextStepCount }, (_, index) => previous[id][index] ?? false),
+        ]),
+      ),
+    )
   }
 
   function togglePlayback() {
@@ -274,8 +283,7 @@ function App() {
       )
       audioRef.current.context.resume().then(() => {
         stepIndexRef.current = 0
-        playbackStartTimeRef.current = audioRef.current.context.currentTime + 0.04
-        nextStepTimeRef.current = playbackStartTimeRef.current
+        nextStepTimeRef.current = audioRef.current.context.currentTime + 0.04
         setCurrentStep(0)
         setPlaying(true)
       }).catch((error) => {
@@ -289,7 +297,7 @@ function App() {
   }
 
   function clearPattern() {
-    setPattern(
+    setPatternState(
       Object.fromEntries(
         instruments.map(({ id }) => [id, Array(stepCount).fill(false)]),
       ),
@@ -317,7 +325,7 @@ function App() {
       return
     }
 
-    setPattern(result.pattern)
+    setPatternState(result.pattern)
   }
 
   async function analyzeAudio(event) {
@@ -351,7 +359,7 @@ function App() {
 
       setBpm(nextBpm)
       setBars(nextBars)
-      setPattern(mapped.pattern)
+      setPatternState(mapped.pattern)
       setAnalysisMessage(`Pattern detected at ${nextBpm} BPM · ${result.duration.toFixed(1)} seconds`)
     } catch (error) {
       setAnalysisError(error instanceof Error ? error.message : 'Audio analysis failed.')
@@ -402,7 +410,11 @@ function App() {
               <select
                 aria-label="Time signature numerator"
                 value={numerator}
-                onChange={(event) => setNumerator(Number(event.target.value))}
+                onChange={(event) => {
+                  const nextNumerator = Number(event.target.value)
+                  setNumerator(nextNumerator)
+                  resizePattern(nextNumerator * bars * subdivisions.length)
+                }}
               >
                 {Array.from({ length: 12 }, (_, index) => index + 1).map((value) => (
                   <option key={value} value={value}>{value}</option>
@@ -457,7 +469,15 @@ function App() {
           <div className="transport-divider" />
           <label className="bars-control">
             <span className="control-label">LENGTH</span>
-            <select aria-label="Pattern length in bars" value={bars} onChange={(event) => setBars(Number(event.target.value))}>
+            <select
+              aria-label="Pattern length in bars"
+              value={bars}
+              onChange={(event) => {
+                const nextBars = Number(event.target.value)
+                setBars(nextBars)
+                resizePattern(numerator * nextBars * subdivisions.length)
+              }}
+            >
               {barOptions.map((value) => <option key={value} value={value}>{value} {value === 1 ? 'bar' : 'bars'}</option>)}
             </select>
           </label>
@@ -640,4 +660,3 @@ function App() {
 
 
 export default App
-

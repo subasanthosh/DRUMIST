@@ -2,7 +2,7 @@
 
 Drumist is a browser-based drum step sequencer with an audio-to-pattern feature. This guide describes the application as it exists in this repository: how its parts fit together, how the drum classifier is produced, how to run it locally, and how to package and deploy it with Docker.
 
-The repository includes a Docker deployment path, but it does not identify or configure a cloud hosting provider. Publishing the image to a registry, setting provider-specific environment variables, and configuring a public domain or HTTPS are deployment-operator steps.
+The repository includes a Docker deployment path, a Render Blueprint, and a GitHub Actions pipeline that validates changes and publishes production images to GitHub Container Registry (GHCR). A public domain and HTTPS are provided by Render after deployment.
 
 ## 1. What the application does
 
@@ -67,6 +67,7 @@ The backend looks for the model at the repository root by default. Set `DRUMIST_
 | `backend/main.py` | FastAPI routes, upload validation, temporary-file cleanup, and frontend serving |
 | `backend/process.py` | Model loading, audio decoding, tempo estimation, feature extraction, and predictions |
 | `frontend/` | Production React/Vite sequencer |
+| `.github/workflows/ci-cd.yml` | Pull-request checks and GHCR image publishing |
 | `drumtrain.ipynb` | Example classifier training notebook |
 | `dataset/` | WAV training samples used by the notebook |
 | `drumist_model.pkl` | Serialized classifier used at runtime |
@@ -133,7 +134,17 @@ curl.exe -F "file=@drumist_test.wav" http://127.0.0.1:8000/api/process_audio
 
 The request should return JSON containing `bpm`, `duration`, and `events`. A file with an unsupported extension returns HTTP 415; an empty file returns 400; a file above 25 MiB returns 413; and invalid or overlong audio can return 422. If the classifier is missing, analysis returns 503.
 
-## 6. Build and deploy with Docker
+## 6. CI/CD pipeline
+
+The GitHub Actions workflow in `.github/workflows/ci-cd.yml` runs for pull requests targeting `main`, pushes to `main`, and pushed version tags matching `v*`.
+
+For each pull request, it installs the frontend dependencies from the lockfile, runs the frontend linter and production build, installs the pinned backend runtime dependencies, checks Python syntax, and verifies that the backend application imports. After those checks pass, it builds the production Docker image without publishing it. The repository currently has no automated application test suite, so these checks do not verify audio-processing behavior or classifier accuracy.
+
+For a push to `main` or a version tag, the workflow runs the same frontend and backend checks, then builds and publishes the Docker image to `ghcr.io/<owner>/<repository>`. A push to `main` publishes `main`, `latest`, and a commit-SHA tag; a version tag such as `v1.2.3` publishes that version tag and a commit-SHA tag. The publish job uses the automatically provided `GITHUB_TOKEN` with package-write permission; no registry password or GitHub secret needs to be added.
+
+The image is the pipeline's deployment deliverable; this workflow does not start or update a running service. To deploy it, configure a hosting provider to pull the published GHCR image and follow the provider-neutral runtime steps in the Docker section below. Before relying on the package, confirm that GitHub Actions is enabled for the repository and that its organization or repository settings permit workflows to create packages.
+
+## 7. Build and deploy with Docker
 
 The Dockerfile builds the frontend with Node 22, then copies the static build into a Python 3.12 image with the API and model. The runtime image installs FFmpeg and libsndfile, runs the API as a non-root user, and listens on port 8000 by default.
 
@@ -156,9 +167,13 @@ For a public deployment:
 4. Configure HTTPS and a public hostname through the hosting provider or its reverse proxy.
 5. Check `/api/health`, load the frontend, and submit a representative short audio file after deployment.
 
-These are provider-neutral steps; the repository contains no provider-specific service manifest, credentials, or public deployment URL.
+### Deploy on Render
 
-## 7. Input and operational limits
+The root `render.yaml` defines a single Docker-backed web service using the repository's Dockerfile and checks `/api/health`. To deploy, create a Blueprint in Render, connect this repository, and apply the `drumist` service. Render builds the React frontend and Python API together, supplies the listening `PORT`, and provides the public service URL and HTTPS. No separate frontend service or API URL configuration is required.
+
+The service uses the bundled `drumist_model.pkl`. Keep that file in the repository for the image build, or update the Dockerfile and provide a readable model file with `DRUMIST_MODEL_PATH`. Check the Render deployment logs and `/api/health` after the first deploy; the health response should include `"model_available": true`.
+
+## 8. Input and operational limits
 
 - Accepted upload extensions: WAV, MP3, FLAC, OGG, and M4A.
 - Maximum upload size: 25 MiB.
@@ -169,7 +184,7 @@ These are provider-neutral steps; the repository contains no provider-specific s
 - The API keeps no uploaded files after processing and does not persist user patterns.
 - The API has no authentication or rate limiting configured. Add appropriate access controls and request limits before exposing it to untrusted public traffic.
 
-## 8. Maintenance and next steps
+## 9. Maintenance and next steps
 
 - Use representative, clearly labeled audio to expand and evaluate the training dataset.
 - Replace notebook-specific absolute paths with portable paths and record evaluation metrics before distributing an updated model.
