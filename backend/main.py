@@ -6,7 +6,10 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.process import MODEL_PATH, process_audio
+if __package__:
+    from .process import MODEL_PATH, process_audio
+else:
+    from process import MODEL_PATH, process_audio
 
 
 logging.basicConfig(level=logging.INFO)
